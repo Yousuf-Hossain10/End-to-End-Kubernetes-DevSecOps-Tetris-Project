@@ -1,0 +1,151 @@
+name: Local DevSecOps Pipeline (Kind)
+#
+# Self-hosted equivalent of Jenkins-Pipeline-Code/Jenkinsfile-TetrisV1 and
+# Jenkinsfile-TetrisV2, minus anything that depends on AWS or a Docker Hub
+# account. Runs entirely on your own machine against a local Kind cluster:
+#
+#   Jenkins stage                  -> here
+#   ----------------------------------------------------------------------
+#   Checkout                       -> actions/checkout
+#   SonarQube Analysis + Gate      -> SonarSource/sonarqube-scan-action + check-quality-gate.sh
+#                                      (talks to the SonarQube container from setup-local-runner.sh)
+#   Installing Dependencies        -> npm install
+#   OWASP Dependency-Check Scan    -> dependency-check/Dependency-Check_Action
+#   Trivy File Scan                -> aquasecurity/trivy-action (fs)
+#   Docker Image Build             -> docker build
+#   Docker Image Pushing           -> kind load docker-image (no registry needed)
+#   TRIVY Image Scan               -> aquasecurity/trivy-action (image)
+#   Update Deployment file         -> sed + git commit/push [skip ci]
+#   (ArgoCD sync, in the original) -> kubectl apply + rollout status (direct, no ArgoCD locally)
+#
+# One-time host setup: see scripts/setup-local-runner.sh and docs/LOCAL_KIND_DEMO.md.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Tetris-V1/**'
+      - 'Tetris-V2/**'
+      - 'Manifest-file/deployment-service.local.yml'
+      - '.github/workflows/local-kind-devsecops.yml'
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: 'Which app to build'
+        type: choice
+        options: [Tetris-V1, Tetris-V2]
+        default: Tetris-V2
+
+permissions:
+  contents: write
+
+env:
+  KIND_CLUSTER_NAME: devsecops-tetris
+  IMAGE_NAME: tetris-local
+  SONAR_HOST_URL: http://localhost:9000
+
+jobs:
+  build-scan-deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve app directory
+        run: |
+          echo "APP_DIR=${{ inputs.app_version || 'Tetris-V2' }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: SonarQube Analysis
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: ${{ env.APP_DIR }}
+          args: >
+            -Dsonar.projectKey=${{ env.APP_DIR }}
+            -Dsonar.projectName=${{ env.APP_DIR }}
+
+      - name: Quality Gate Check (non-blocking, like Jenkins abortPipeline:false)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SCAN_DIR: ${{ env.APP_DIR }}
+        run: bash scripts/check-quality-gate.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+
+      - name: Installing Dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: npm install
+
+      - name: OWASP Dependency-Check Scan
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: ${{ env.APP_DIR }}
+          path: ${{ env.APP_DIR }}
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --disableYarnAudit
+            --disableNodeAudit
+
+      - name: Upload Dependency-Check report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report-${{ env.IMAGE_TAG }}
+          path: reports
+
+      - name: Trivy File Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ${{ env.APP_DIR }}
+          format: table
+          output: trivyfs-${{ env.IMAGE_TAG }}.txt
+          exit-code: '0'
+
+      - name: Docker Image Build
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -t ${{ env.IMAGE_NAME }}:latest .
+
+      - name: TRIVY Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: table
+          output: trivyimage-${{ env.IMAGE_TAG }}.txt
+          exit-code: '0'
+
+      - name: Load image into Kind (replaces Docker Hub push)
+        run: |
+          kind load docker-image ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} --name ${{ env.KIND_CLUSTER_NAME }}
+          kind load docker-image ${{ env.IMAGE_NAME }}:latest --name ${{ env.KIND_CLUSTER_NAME }}
+
+      - name: Update local manifest image tag
+        run: |
+          sed -i "s|image: ${{ env.IMAGE_NAME }}:.*|image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}|" Manifest-file/deployment-service.local.yml
+          git config user.email "mdyousufhossainanik10@gmail.com"
+          git config user.name "YousufAnik-DevOps"
+          git add Manifest-file/deployment-service.local.yml
+          git diff --staged --quiet || git commit -m "Update local deployment image to build ${{ env.IMAGE_TAG }} [skip ci]"
+          git push || echo "Nothing to push"
+
+      - name: Deploy to Kind
+        run: |
+          kubectl config use-context kind-${{ env.KIND_CLUSTER_NAME }}
+          kubectl apply -f Manifest-file/deployment-service.local.yml
+          kubectl rollout status deployment/tetris --timeout=120s
+
+      - name: Print access info
+        run: |
+          {
+            echo "### Tetris is live"
+            echo "App: **${{ env.APP_DIR }}**, image tag **${{ env.IMAGE_TAG }}**"
+            echo ""
+            echo "Open **http://localhost:30080** in your browser."
+          } >> "$GITHUB_STEP_SUMMARY"
