@@ -1,0 +1,58 @@
+# Kind-friendly variant of deployment-service.yml
+#
+# Differences from the AWS/EKS version:
+#   - image is loaded straight into the Kind node (no registry), so
+#     imagePullPolicy is "Never" and the tag is rewritten by the CI
+#     workflow on every run.
+#   - Service is NodePort (not LoadBalancer) since Kind has no cloud
+#     load balancer. Paired with scripts/kind-cluster-config.yaml,
+#     nodePort 30080 is reachable at http://localhost:30080 on the host.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tetris
+  labels:
+    app: tetris
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tetris
+  template:
+    metadata:
+      labels:
+        app: tetris
+    spec:
+      containers:
+      - name: tetris
+        image: tetris-local:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tetris-service
+spec:
+  selector:
+    app: tetris
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+    nodePort: 30080
+  type: NodePort

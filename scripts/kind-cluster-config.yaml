@@ -1,0 +1,16 @@
+# Kind cluster config for the local DevSecOps demo.
+#
+# The extraPortMappings line makes the NodePort service (30080, see
+# Manifest-file/deployment-service.local.yml) reachable directly at
+# http://localhost:30080 on the host machine, with no kubectl
+# port-forward needed during the interview demo.
+#
+# Usage: kind create cluster --name devsecops-tetris --config kind-cluster-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30080
+    hostPort: 30080
+    protocol: TCP
