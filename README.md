@@ -13,6 +13,15 @@ Welcome to an immersive DevSecOps learning experience! This project guides you t
 5. **Tetris-V1:** Initial version of the Tetris game application.
 6. **Tetris-V2:** Enhanced version of the Tetris game application.
 
+## Running it locally (no AWS account) 💻
+
+The pipeline also runs against a local [Kind](https://kind.sigs.k8s.io/) cluster via a self-hosted
+GitHub Actions runner — same security/quality gates, no cloud account needed.
+
+- **Setup guide (start here):** [`docs/RUNNING_LOCALLY.md`](docs/RUNNING_LOCALLY.md)
+- **Quick reference once set up:** [`docs/LOCAL_KIND_DEMO.md`](docs/LOCAL_KIND_DEMO.md)
+- **Why it's built this way:** [`docs/adr/0001-local-devsecops-pipeline.md`](docs/adr/0001-local-devsecops-pipeline.md)
+
 ## Tools Explored 🛠️
 1. **Jenkins:** Automated CI/CD pipelines
 2. **ArgoCD:** Continuous deployment to Kubernetes
